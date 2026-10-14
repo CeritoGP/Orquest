@@ -1,0 +1,27 @@
+# Optional Orquest execution profile overrides.
+# Set ORQUEST_PROFILES_PATH to a copy of this file; profile IDs not overridden
+# retain the built-in quick, researcher, implementer and reviewer settings.
+version: 1
+profiles:
+  quick:
+    model: auto
+    effort: low
+    access: read-only
+
+  researcher:
+    model: auto
+    effort: medium
+    access: read-only
+
+  implementer:
+    # Set this only if it exists in `agy agents` for your installation.
+    # agent: implementer
+    model: auto
+    effort: high
+    access: worktree
+
+  reviewer:
+    # agent: reviewer
+    model: auto
+    effort: high
+    access: read-only

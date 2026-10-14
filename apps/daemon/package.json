@@ -1,0 +1,17 @@
+{
+  "name": "@orquest/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts"
+  },
+  "dependencies": {
+    "@orquest/agy-adapter": "*",
+    "@orquest/contracts": "*",
+    "@orquest/core": "*",
+    "@orquest/fake-agy": "*",
+    "@orquest/persistence": "*",
+    "tsx": "^4.20.5"
+  }
+}

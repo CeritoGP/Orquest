@@ -1,0 +1,10 @@
+# Example Codex configuration for Orquest Bridge
+# Copy this file to .codex/config.toml in your trusted workspace root.
+# Do NOT store secrets, tokens, or personal paths in this file.
+
+default_tools_approval_mode = "writes"
+
+[mcp_servers.orquest]
+command = "node"
+args = ["./node_modules/tsx/dist/cli.mjs", "./packages/mcp-server/src/server.ts"]
+env = { ORQUEST_DAEMON_URL = "http://127.0.0.1:4317" }

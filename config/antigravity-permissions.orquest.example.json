@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "description": "Orquest operational baseline: bounded read-only inspection and local verification commands.",
+  "settings": {
+    "toolPermission": "proceed-in-sandbox",
+    "enableTerminalSandbox": true
+  },
+  "permissions": {
+    "allow": [
+      "command(dir)",
+      "escalate_admin(Get-ChildItem -Force)",
+      "command(Get-ChildItem)",
+      "command(Get-Content)",
+      "command(Select-String)",
+      "command(rg)",
+      "command(git status)",
+      "command(git diff)",
+      "command(git log)",
+      "command(git show)",
+      "command(git ls-files)",
+      "escalate_admin(git ls-files)",
+      "command(git rev-parse)",
+      "command(git branch --show-current)",
+      "command(regex:npm.cmd run (build|lint|test))",
+      "command(regex:npm run (build|lint|test))"
+    ]
+  }
+}
