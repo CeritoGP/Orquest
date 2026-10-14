@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DashboardEvent, JobInput, JobRecord, JobResult } from "@orquest/contracts";
+import { NO_SUMMARY_FALLBACK } from "@orquest/agy-adapter";
 import { createJob, type JobRunner } from "@orquest/core";
 import { FakeAgyRunner } from "@orquest/fake-agy";
 import { OrquestDatabase } from "@orquest/persistence";
@@ -74,6 +75,7 @@ class ControlledRunner implements JobRunner {
     pending.reject(new Error(`Failed ${jobId}`));
   }
 }
+
 class DuplicateEventRunner implements JobRunner {
   async execute(_job: JobRecord, emit: Parameters<JobRunner["execute"]>[1], signal: AbortSignal): Promise<JobResult> {
     void signal;
@@ -129,6 +131,7 @@ describe("JobService", () => {
     unsubscribe();
     database.close();
   });
+
   it("holds dependent jobs until prerequisites complete", async () => {
     const directory = mkdtempSync(join(tmpdir(), "orquest-dependency-test-"));
     tempDirectories.push(directory);
@@ -207,6 +210,7 @@ describe("JobService", () => {
     service.close();
     database.close();
   });
+
   it("recovers queued work and marks interrupted workers failed after a daemon restart", async () => {
     const directory = mkdtempSync(join(tmpdir(), "orquest-recovery-test-"));
     tempDirectories.push(directory);
@@ -231,6 +235,7 @@ describe("JobService", () => {
     service.close();
     database.close();
   });
+
   it("runs allowed verification commands and stores their results", async () => {
     const directory = mkdtempSync(join(tmpdir(), "orquest-verification-test-"));
     tempDirectories.push(directory);
@@ -240,10 +245,12 @@ describe("JobService", () => {
     const job = service.submit({ ...jobInput(directory), verificationCommands: ["git diff --check"] });
 
     const completed = await waitForCompletion(service, job.id);
-    expect(completed.result?.tests).toContainEqual(expect.objectContaining({
-      command: "git diff --check",
-      status: "passed",
-    }));
+    expect(completed.result?.tests).toContainEqual(
+      expect.objectContaining({
+        command: "git diff --check",
+        status: "passed",
+      }),
+    );
     service.close();
     database.close();
   });
@@ -258,12 +265,19 @@ describe("JobService", () => {
     service.close();
     database.close();
   });
+
   it("keeps explicit values over profile defaults for single and batch submissions", async () => {
     const directory = mkdtempSync(join(tmpdir(), "orquest-profile-overrides-test-"));
     tempDirectories.push(directory);
     const database = new OrquestDatabase(join(directory, "orquest.db"));
     const service = new JobService(database, new FakeAgyRunner(), 1);
-    const explicit = { ...jobInput(directory), profileId: "implementer", model: "custom-model", effort: "medium" as const, accessMode: "read-only" as const };
+    const explicit = {
+      ...jobInput(directory),
+      profileId: "implementer",
+      model: "custom-model",
+      effort: "medium" as const,
+      accessMode: "read-only" as const,
+    };
 
     const single = service.submit(explicit);
     const batch = service.submitBatch({ jobs: [{ ...explicit, title: "Inspect override batch" }] });
@@ -292,5 +306,344 @@ describe("JobService", () => {
     await waitForCompletion(service, reviewer.id);
     service.close();
     database.close();
+  });
+
+  describe("D03 worker conversation persistence, reconciliation, and metadata", () => {
+    it("reconciles fragmented and repeated stream deltas with the final summary without creating duplicate messages", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "orquest-d03-fragmented-"));
+      tempDirectories.push(directory);
+      const database = new OrquestDatabase(join(directory, "orquest.db"));
+      const runner = new FakeAgyRunner({
+        stepDelayMs: 5,
+        conversationId: "conv-frag-1",
+        turnId: "turn-frag-1",
+        messageId: "msg-frag-1",
+        replayStream: true,
+        steps: [
+          {
+            id: "delta-1",
+            kind: "job.message",
+            messageKey: "msg:msg-frag-1",
+            messageId: "msg-frag-1",
+            textDelta: "Análisis inicial, ",
+            repeat: 2,
+          },
+          {
+            id: "delta-2",
+            kind: "job.message",
+            messageKey: "msg:msg-frag-1",
+            messageId: "msg-frag-1",
+            textDelta: "detalle intermedio ",
+            repeat: 2,
+          },
+          {
+            id: "delta-3",
+            kind: "job.message",
+            messageKey: "msg:msg-frag-1",
+            messageId: "msg-frag-1",
+            textDelta: "y conclusión final.",
+            final: true,
+          },
+        ],
+        finalSummary: "Análisis inicial, detalle intermedio y conclusión final.",
+      });
+      const service = new JobService(database, runner, 1);
+
+      const submitted = service.submit(jobInput(directory));
+      const completed = await waitForCompletion(service, submitted.id);
+
+      const page = database.queryTaskMessages(completed.taskSessionId!, { limit: 20 });
+      expect(page.items).toHaveLength(2);
+      const [userMessage, assistantMessage] = page.items;
+      expect(userMessage).toMatchObject({
+        role: "user",
+        deliveryStatus: "sent",
+        source: "client",
+        recipient: "worker",
+        intent: "initial",
+        target: { kind: "attempt", jobId: completed.id },
+        content: "List the important files.",
+        providerIdentity: {
+          provider: "fake-agy",
+          conversationId: "conv-frag-1",
+          turnId: "turn-frag-1",
+          messageId: null,
+        },
+      });
+      expect(assistantMessage).toMatchObject({
+        role: "assistant",
+        deliveryStatus: "received",
+        source: "runtime",
+        recipient: "user",
+        intent: "response",
+        target: { kind: "attempt", jobId: completed.id },
+        content: "Análisis inicial, detalle intermedio y conclusión final.",
+        providerIdentity: {
+          provider: "fake-agy",
+          conversationId: "conv-frag-1",
+          turnId: "turn-frag-1",
+          messageId: "msg-frag-1",
+        },
+      });
+      expect(completed.result?.summary).toBe("Análisis inicial, detalle intermedio y conclusión final.");
+      service.close();
+      database.close();
+    });
+
+    it("handles final results without a summary both with prior streamed deltas and without any assistant text", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "orquest-d03-no-summary-"));
+      tempDirectories.push(directory);
+      const database = new OrquestDatabase(join(directory, "orquest.db"));
+
+      // Case A: Deltas streamed, final result omits summary
+      const runnerWithDeltas = new FakeAgyRunner({
+        stepDelayMs: 5,
+        steps: [
+          {
+            id: "streamed-1",
+            kind: "job.message",
+            messageKey: "turn-response",
+            textDelta: "Respuesta pública emitida en deltas sin resumen en result.",
+          },
+        ],
+        finalSummary: null,
+      });
+      const serviceWithDeltas = new JobService(database, runnerWithDeltas, 1);
+      const jobA = serviceWithDeltas.submit({ ...jobInput(directory), title: "Streamed without final summary" });
+      const completedA = await waitForCompletion(serviceWithDeltas, jobA.id);
+      const messagesA = database.queryTaskMessages(completedA.taskSessionId!).items;
+      expect(messagesA).toHaveLength(2);
+      expect(messagesA[1]?.content).toBe("Respuesta pública emitida en deltas sin resumen en result.");
+      expect(completedA.result?.summary).toBe("Respuesta pública emitida en deltas sin resumen en result.");
+      serviceWithDeltas.close();
+
+      // Case B: Only tool/progress events, final result omits summary
+      const runnerWithoutDeltas = new FakeAgyRunner({
+        stepDelayMs: 5,
+        steps: [
+          {
+            id: "tool-only",
+            kind: "job.tool",
+            message: "read_files",
+            payload: { tool: "read_files" },
+          },
+        ],
+        finalSummary: null,
+      });
+      const serviceWithoutDeltas = new JobService(database, runnerWithoutDeltas, 1);
+      const jobB = serviceWithoutDeltas.submit({ ...jobInput(directory), title: "Tool only without summary" });
+      const completedB = await waitForCompletion(serviceWithoutDeltas, jobB.id);
+      const messagesB = database.queryTaskMessages(completedB.taskSessionId!).items;
+      expect(messagesB).toHaveLength(1);
+      expect(messagesB[0]?.role).toBe("user");
+      expect(completedB.result?.summary).toBe(NO_SUMMARY_FALLBACK);
+      serviceWithoutDeltas.close();
+      database.close();
+    });
+
+    it("preserves partial public messages on mid-stream cancellation and marks pre-execution cancel as failed delivery", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "orquest-d03-cancel-"));
+      tempDirectories.push(directory);
+      const database = new OrquestDatabase(join(directory, "orquest.db"));
+
+      let readyJobId: string | null = null;
+      const runner = new FakeAgyRunner({
+        stepDelayMs: 5,
+        conversationId: "conv-cancel-1",
+        turnId: "turn-cancel-1",
+        messageId: "msg-cancel-1",
+        holdUntilAbort: true,
+        onReadyForAbort: (runningJob) => {
+          readyJobId = runningJob.id;
+        },
+        steps: [
+          {
+            id: "partial-delta",
+            kind: "job.message",
+            messageKey: "msg:msg-cancel-1",
+            messageId: "msg-cancel-1",
+            textDelta: "Respuesta parcial antes de cancelar.",
+          },
+        ],
+      });
+      const service = new JobService(database, runner, 1);
+
+      const activeJob = service.submit({ ...jobInput(directory), title: "Cancel mid-stream" });
+      const queuedJob = service.submit({ ...jobInput(directory), title: "Cancel while queued" });
+
+      for (let attempt = 0; attempt < 60 && readyJobId === null; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 15));
+      }
+      expect(readyJobId).toBe(activeJob.id);
+
+      service.cancel(queuedJob.id);
+      const canceledQueued = await waitForStatus(service, queuedJob.id, "CANCELED");
+      const queuedMessages = database.queryTaskMessages(canceledQueued.taskSessionId!).items;
+      expect(queuedMessages).toHaveLength(1);
+      expect(queuedMessages[0]?.deliveryStatus).toBe("failed");
+
+      service.cancel(activeJob.id);
+      const canceledActive = await waitForStatus(service, activeJob.id, "CANCELED");
+      const activeMessages = database.queryTaskMessages(canceledActive.taskSessionId!).items;
+      expect(activeMessages).toHaveLength(2);
+      expect(activeMessages[0]).toMatchObject({
+        role: "user",
+        deliveryStatus: "sent",
+        providerIdentity: {
+          provider: "fake-agy",
+          conversationId: "conv-cancel-1",
+          turnId: "turn-cancel-1",
+          messageId: null,
+        },
+      });
+      expect(activeMessages[1]).toMatchObject({
+        role: "assistant",
+        deliveryStatus: "received",
+        content: "Respuesta parcial antes de cancelar.",
+        providerIdentity: {
+          provider: "fake-agy",
+          conversationId: "conv-cancel-1",
+          turnId: "turn-cancel-1",
+          messageId: "msg-cancel-1",
+        },
+      });
+
+      service.close();
+      database.close();
+    });
+
+    it("keeps effective model, effort, and provider identity unknown unless runtime protocol reports concrete values", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "orquest-d03-identity-"));
+      tempDirectories.push(directory);
+      const database = new OrquestDatabase(join(directory, "orquest.db"));
+
+      const unknownRunner = new FakeAgyRunner({
+        stepDelayMs: 5,
+        unknownIdentity: true,
+        reportedModel: "auto",
+        reportedEffort: null,
+      });
+      const unknownService = new JobService(database, unknownRunner, 1);
+      const unknownJob = unknownService.submit({
+        ...jobInput(directory),
+        model: "auto",
+        effort: "medium",
+      });
+      const completedUnknown = await waitForCompletion(unknownService, unknownJob.id);
+      expect(completedUnknown.model).toBe("auto");
+      expect(completedUnknown.effort).toBe("medium");
+      expect(completedUnknown.effectiveModel).toBeNull();
+      expect(completedUnknown.effectiveEffort).toBeNull();
+      expect(completedUnknown.executionMetadataSource).toBe("unknown");
+      expect(completedUnknown.conversationId).toBeNull();
+
+      const unknownMessages = database.queryTaskMessages(completedUnknown.taskSessionId!).items;
+      expect(unknownMessages).toHaveLength(2);
+      expect(unknownMessages[0]?.providerIdentity).toBeNull();
+      expect(unknownMessages[1]?.providerIdentity).toBeNull();
+      unknownService.close();
+
+      const runtimeRunner = new FakeAgyRunner({
+        stepDelayMs: 5,
+        conversationId: "conv-runtime-99",
+        turnId: "turn-runtime-99",
+        messageId: "msg-runtime-99",
+        reportedModel: "gemini-3.8-pro",
+        reportedEffort: "high",
+      });
+      const runtimeService = new JobService(database, runtimeRunner, 1);
+      const runtimeJob = runtimeService.submit({
+        ...jobInput(directory),
+        model: "auto",
+        effort: "low",
+      });
+      const completedRuntime = await waitForCompletion(runtimeService, runtimeJob.id);
+      expect(completedRuntime.model).toBe("auto");
+      expect(completedRuntime.effort).toBe("low");
+      expect(completedRuntime.effectiveModel).toBe("gemini-3.8-pro");
+      expect(completedRuntime.effectiveEffort).toBe("high");
+      expect(completedRuntime.executionMetadataSource).toBe("runtime");
+
+      const runtimeMessages = database.queryTaskMessages(completedRuntime.taskSessionId!).items;
+      expect(runtimeMessages[0]?.providerIdentity).toEqual({
+        provider: "fake-agy",
+        conversationId: "conv-runtime-99",
+        turnId: "turn-runtime-99",
+        messageId: null,
+      });
+      expect(runtimeMessages[1]?.providerIdentity).toEqual({
+        provider: "fake-agy",
+        conversationId: "conv-runtime-99",
+        turnId: "turn-runtime-99",
+        messageId: "msg-runtime-99",
+      });
+      runtimeService.close();
+      database.close();
+    });
+
+    it("excludes private reasoning and redacts secrets before persisting or publishing events and messages", async () => {
+      const directory = mkdtempSync(join(tmpdir(), "orquest-d03-secrets-"));
+      tempDirectories.push(directory);
+      const database = new OrquestDatabase(join(directory, "orquest.db"));
+      const runner = new FakeAgyRunner({
+        stepDelayMs: 5,
+        steps: [
+          {
+            id: "private-step",
+            kind: "job.message",
+            privateReasoning: true,
+            textDelta: "Private chain of thought with secret_token=hidden-999",
+          },
+          {
+            id: "public-step",
+            kind: "job.message",
+            messageKey: "turn-response",
+            thought: "Internal reasoning note that must never be persisted",
+            textDelta: "Diagnóstico con Authorization: Bearer secret-worker-jwt y api_key=sk-abcdef1234567890",
+            payload: {
+              accessToken: "raw-access-token-value",
+              reasoning_delta: "Hidden reasoning delta",
+            },
+          },
+        ],
+        finalSummary: "Diagnóstico con Authorization: Bearer secret-worker-jwt y api_key=sk-abcdef1234567890",
+      });
+      const service = new JobService(database, runner, 1);
+      const published: DashboardEvent[] = [];
+      const unsubscribe = service.subscribe((event) => published.push(event));
+
+      const submitted = service.submit({
+        ...jobInput(directory),
+        task: "Inspect using Authorization: Bearer secret-user-jwt and password=topsecretpassword",
+      });
+      const completed = await waitForCompletion(service, submitted.id);
+
+      const messages = database.queryTaskMessages(completed.taskSessionId!).items;
+      expect(messages).toHaveLength(2);
+      const serializedMessages = JSON.stringify(messages);
+      const serializedEvents = JSON.stringify(service.getEvents(completed.id, 0, 50));
+      const serializedPublished = JSON.stringify(published);
+
+      for (const blob of [serializedMessages, serializedEvents, serializedPublished, JSON.stringify(completed.result)]) {
+        expect(blob).not.toContain("secret-user-jwt");
+        expect(blob).not.toContain("topsecretpassword");
+        expect(blob).not.toContain("secret-worker-jwt");
+        expect(blob).not.toContain("sk-abcdef1234567890");
+        expect(blob).not.toContain("raw-access-token-value");
+        expect(blob).not.toContain("hidden-999");
+        expect(blob).not.toContain("Private chain of thought");
+        expect(blob).not.toContain("Internal reasoning note");
+        expect(blob).not.toContain("Hidden reasoning delta");
+      }
+
+      expect(messages[0]?.content).toContain("Authorization: Bearer [REDACTED]");
+      expect(messages[0]?.content).toContain("password=[REDACTED]");
+      expect(messages[1]?.content).toContain("Authorization: Bearer [REDACTED]");
+      expect(messages[1]?.content).toContain("api_key=[REDACTED]");
+
+      unsubscribe();
+      service.close();
+      database.close();
+    });
   });
 });

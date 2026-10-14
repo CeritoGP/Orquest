@@ -1,7 +1,7 @@
 # Handoff de desarrollo — Orquest
 
-Actualizado: 2026-10-13. Este documento permite retomar sin el historial del chat.
-Checkpoint actual: D00/D01/D02 aceptados; siguiente asignación D03.
+Actualizado: 2026-10-14. Este documento permite retomar sin el historial del chat.
+Checkpoint actual: D00/D01/D02 aceptados; D03 requiere corrección según su informe. No iniciar D04.
 Este documento no inicia agentes ni sesiones reales.
 
 ## 1. Lectura y autoridad
@@ -71,7 +71,7 @@ no asumir compatibilidad, login ni cobertura de API por una suscripción.
 
 ## 3. Workspace y código que no debe perderse
 
-Ruta actual: `C:\Users\Usuario\Documents\Orquest`.
+Ruta actual: `C:\Users\Usuario\Documents\Orquest_Github`.
 HEAD observado el 2026-10-09: `14f0d5eb105c6b1369cf8ad43f12c369a91f33bd`.
 Es un checkpoint observado, **no** una orden de checkout/reset. Hay cambios sin
 commit y archivos nuevos; volver a ejecutar `git status --short` al empezar.
@@ -147,7 +147,7 @@ no inventar modelo, razonamiento, agentes ni identidad del orquestador.
 ```text
 [ORQUEST][AGENTE B][D03][ESTADO: EN_PROGRESO]
 
-Trabaja en C:\Users\Usuario\Documents\Orquest.
+Trabaja en C:\Users\Usuario\Documents\Orquest_Github.
 Lee AGENTS.md, docs/handoff.md, docs/continuation-progress.md,
 IMPLEMENTATION_PLAN.md completo, docs/continuity-contract.md y las reglas/ficha
 D03 de docs/delegation-plan.md. D00/D01/D02 están aceptados; no los repitas.

@@ -1,5 +1,18 @@
 # Registro de continuación
 
+## D03 — Entrega externa recuperada — 2026-10-14
+
+Estado: **REQUIERE_CORRECCION por revisión del orquestador**. Se trasladaron los
+seis archivos a `C:\Users\Usuario\Documents\Orquest_Github`, el repositorio
+indicado por el usuario, sin commit/push y preservando cambios ajenos.
+Dependencias locales restauradas desde lockfile tras fallo del intento offline.
+Verificación final aquí: lint exit 0; typecheck exit 1 (identidad nullable);
+162 tests pasaron y uno falló por exposición de secretos, con EPERM adicional
+al limpiar su fixture. Hay además truncado a 20k y pérdida de deltas idénticos.
+Informe y siguiente acción: [D03](delegation-results/D03.md).
+Corregir D03 y revisarlo antes de asignar D04. D00/D01/D02 permanecen aceptados.
+
+
 ## D02 — Persistencia y lectura por tarea — 2026-10-13
 
 Estado: **ACEPTADO por el orquestador, 2026-10-13**. Se añadieron
